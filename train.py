@@ -75,14 +75,64 @@ def to_frame(E, lat, lon):
 
 
 # ---------- inputs ----------
+OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter',
+            'https://overpass.private.coffee/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter']
+
+
 def osm_runways():
+    """Runway centrelines from OpenStreetMap (the same source as the screen's map). Tries several mirrors, twice."""
+    import time
     q = f'[out:json];way[aeroway=runway]({AP["lat"]-.06},{AP["lon"]-.07},{AP["lat"]+.06},{AP["lon"]+.07});out geom;'
-    req = urllib.request.Request('https://overpass-api.de/api/interpreter', data=urllib.parse.urlencode({'data': q}).encode(), headers={'User-Agent': 'FlightCast-trainer'})
-    j = json.load(urllib.request.urlopen(req, timeout=90))
+    last = None
+    for attempt in range(2):
+        for url in OVERPASS:
+            try:
+                req = urllib.request.Request(url, data=urllib.parse.urlencode({'data': q}).encode(), headers={'User-Agent': 'FlightCast-trainer'})
+                j = json.load(urllib.request.urlopen(req, timeout=60))
+                out = []
+                for w in j.get('elements', []):
+                    g, ref = w.get('geometry') or [], (w.get('tags') or {}).get('ref', '')
+                    if len(g) >= 2 and '/' in ref: out.append({'ref': ref, 'a': [g[0]['lon'], g[0]['lat']], 'b': [g[-1]['lon'], g[-1]['lat']]})
+                if out: print(f'runways from OpenStreetMap ({url.split("/")[2]})'); return out
+            except Exception as e:
+                last = e; print(f'  {url.split("/")[2]}: {e}')
+        time.sleep(20)
+    raise RuntimeError(f'all OpenStreetMap mirrors failed ({last})')
+
+
+def runways_from_data(files):
+    """Fallback: find the runways from the flights themselves — every take-off roll and landing roll-out is a fast
+    straight line on the ground. Group them by direction, fit a centreline to each group, and take its extent."""
+    groups = defaultdict(list)
+    for f in files:
+        with gzip.open(f, 'rt') as fh:
+            for line in fh:
+                for p in json.loads(line)['pts']:
+                    if p[3] == 'g' and p[4] and 70 <= p[4] <= 170 and p[5] is not None and km(p[1], p[2], AP['lat'], AP['lon']) < 6:
+                        groups[round((p[5] % 180) / 5) * 5 % 180].append((p[1], p[2]))
+    # merge neighbouring 5° buckets into runway directions
+    dirs = []
+    for h in sorted(groups, key=lambda k: -len(groups[k])):
+        if len(groups[h]) < 40: break
+        d = next((x for x in dirs if ang(x['h'] * 2, h * 2) / 2 <= 7), None)
+        if d: d['pts'] += groups[h]
+        else: dirs.append({'h': h, 'pts': list(groups[h])})
     out = []
-    for w in j.get('elements', []):
-        g, ref = w.get('geometry') or [], (w.get('tags') or {}).get('ref', '')
-        if len(g) >= 2 and '/' in ref: out.append({'ref': ref, 'a': [g[0]['lon'], g[0]['lat']], 'b': [g[-1]['lon'], g[-1]['lat']]})
+    for d in dirs:
+        pts = d['pts']; lat0 = sum(p[0] for p in pts) / len(pts); lon0 = sum(p[1] for p in pts) / len(pts)
+        kx = 111320 * math.cos(math.radians(lat0))
+        xy = [((p[1] - lon0) * kx, (p[0] - lat0) * 110574) for p in pts]
+        sxx = sum(x * x for x, _ in xy); syy = sum(y * y for _, y in xy); sxy = sum(x * y for x, y in xy)
+        th = 0.5 * math.atan2(2 * sxy, sxx - syy); ux, uy = math.cos(th), math.sin(th)          # main axis of the points
+        perp = sorted(-x * uy + y * ux for x, y in xy); mid = perp[len(perp) // 2]
+        keep = [(x, y) for x, y in xy if abs(-x * uy + y * ux - mid) < 40]                     # on that line (not a parallel taxiway)
+        if len(keep) < 30: continue
+        s = sorted(x * ux + y * uy for x, y in keep); s0, s1 = s[int(len(s) * .01)] - 150, s[int(len(s) * .99)] + 150
+        cx, cy = -mid * uy, mid * ux
+        A = [lon0 + (cx + s0 * ux) / kx, lat0 + (cy + s0 * uy) / 110574]; B = [lon0 + (cx + s1 * ux) / kx, lat0 + (cy + s1 * uy) / 110574]
+        hab = bearing(A[1], A[0], B[1], B[0]); n1 = round(hab / 10) % 36 or 36; n2 = round(((hab + 180) % 360) / 10) % 36 or 36
+        out.append({'ref': f'{min(n1, n2):02d}/{max(n1, n2):02d}', 'a': A, 'b': B})
+        print(f'  runway {out[-1]["ref"]} found from {len(keep)} take-off/landing roll positions, {km(A[1], A[0], B[1], B[0]):.1f} km long')
     return out
 
 
@@ -207,12 +257,15 @@ def main():
     train_f, hold_f = files[:len(files) - n_hold], files[len(files) - n_hold:]
     if a.runways: rws = json.load(open(a.runways))
     else:
-        cache = os.path.join(a.out, 'runways.json')
+        cache = os.path.join(a.out, 'runways.json'); os.makedirs(a.out, exist_ok=True)
         try:
-            rws = osm_runways(); os.makedirs(a.out, exist_ok=True); json.dump(rws, open(cache, 'w'))
+            rws = osm_runways(); json.dump(rws, open(cache, 'w'))
         except Exception as e:
-            if not os.path.exists(cache): sys.exit(f'runway layout unavailable from OpenStreetMap ({e})')
-            print('OpenStreetMap unavailable, using the saved runway layout'); rws = json.load(open(cache))
+            if os.path.exists(cache): print('OpenStreetMap unavailable, using the saved runway layout'); rws = json.load(open(cache))
+            else:
+                print('OpenStreetMap unavailable, finding the runways from the flights instead')
+                rws = runways_from_data(files)
+                if not rws: sys.exit('could not determine the runways')
     ends = [e for r in rws for e in runway_ends(r)]
     print(f'{len(ends)} runway ends: {", ".join(e["num"] for e in ends)} · {len(train_f)} training day(s), {len(hold_f)} held back')
     if a.wind_file: wind = {int(k): tuple(v) for k, v in json.load(open(a.wind_file)).items()}
