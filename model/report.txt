@@ -1,0 +1,8 @@
+Held-back flights: 462 arrivals, 138 departures (model trained on 24737 + 7178, 2026-08-27 → 2026-10-13)
+how far off the prediction was (average · 9 in 10 within):
+arrivals   +10s   straight line 311 m · 830 m   defaults 328 m · 836 m   model 336 m · 836 m   | height: 453 / 457 / 471 ft
+arrivals   +20s   straight line 628 m · 1661 m   defaults 679 m · 1671 m   model 711 m · 1671 m   | height: 457 / 463 / 511 ft
+arrivals   +30s   straight line 951 m · 2491 m   defaults 1046 m · 2507 m   model 1107 m · 2507 m   | height: 461 / 468 / 554 ft
+departures +10s   straight line 163 m · 830 m   defaults 164 m · 830 m   model 171 m · 833 m   | height: 49 / 54 / 63 ft
+departures +20s   straight line 342 m · 1661 m   defaults 324 m · 1661 m   model 363 m · 1671 m   | height: 56 / 64 / 98 ft
+departures +30s   straight line 533 m · 2491 m   defaults 488 m · 2491 m   model 567 m · 2506 m   | height: 66 / 78 / 136 ft
